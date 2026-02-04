@@ -1,0 +1,58 @@
+#Pre-Step: Creating conda environment for thesis (thesis_project folder will be specifically for environment)
+conda create --name thesis_project
+
+#Pre-Step: Other activations
+conda config --add channels defaults
+conda config --add channels bioconda
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+
+
+#Pre-Step: Downloading canu using conda
+conda create -n thesis_project canu  -y
+
+#Step 1: Loading conda and activating 
+module load conda/4.8.3
+conda activate thesis_project
+
+#To access Charis files
+cd /home/DAVIDSON/trthompson/Workspace/GENLAB/Shared/2025
+
+#To access my files
+cd /home/DAVIDSON/trthompson/Workspace/GENLAB/fastQC_readfiles
+
+#Step 2: Copying all fastQC files to correct directory (fastQC_readfiles)
+cp /home/DAVIDSON/trthompson/Workspace/GENLAB/Shared/2025/211210_Trio_FR_MU/20211210_1235_MN38558_FAR62079_1360de45/fastq_pass/*.fastq.gz /home/DAVIDSON/trthompson/Workspace/GENLAB/fastQC_sample
+
+#Step 3: Load canu
+module avail canu
+module load canu
+canu --version
+
+#Step 4: Set the environment variable in your terminal/session
+export SCRATCH_PATH=/scratch/trthompson
+
+#Step 5A: Canu Correction Step
+canu -correct -p t_perfoliata -d /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent genomeSize=1.171g useGrid=true gridEngine=slurm stageDirectory=$SCRATCH_PATH -nanopore /home/DAVIDSON/trthompson/Workspace/GENLAB/fast5_readfiles/reads.fastq.gz hapMemory=32g hapThreads=16 corThreads=16 corPartitions=64 corPartitionMin=100 corMhapFilterThreshold=0.0000000002 corMhapOptions="--threshold 0.80 --num-hashes 512 --num-min-matches 3 --ordered-sketch-size 1000 --ordered-kmer-size 14 --min-olap-length 2000 --repeat-idf-scale 50" mhapMemory=60g mhapBlockSize=500 ovlMerDistinct=0.975 gridOptions=" --exclude=compute[0-7]"
+
+#Step 5B: Canu Trimming Step
+canu —trim -p t_perfoliata -d /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent genomeSize=1.171g -nanopore -corrected /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent/t_perfoliata.correctedReads.fasta useGrid=true gridEngine=slurm stageDirectory=$SCRATCH_PATH gridOptions="--exclude=compute[0-7]" hapMemory=32g hapThreads=16 ovsThreads=16
+
+#Step 5C: Canu Assembly Step (Unitig and Contig)
+canu -p t_perfoliata -d /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent genomeSize=1.171g -nanopore /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent/t_perfoliata.trimmedReads.fasta useGrid=true gridEngine=slurm stageDirectory=$SCRATCH_PATH gridOptions="--exclude=compute[0-7]" cnsMemory=8g cnsThreads=8 ovsThreads=8
+
+#Step 6: Check total bases, reads, and coverage of sample run
+cd /scratch/trthompson/trio_practice
+less t_perfoliata.report
+
+#Step 7A: Load Quast
+conda install -c bioconda quast -y
+
+#Step 7B: Load Busco
+conda install -c conda-forge -c bioconda busco=6.0.0
+
+#Step 8A: Run Quast
+quast /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent?t_perfoliata.contigs.fasta -o quast_canu_trio --eukaryote --min-contig 1000 --threads 4 --no-icarus --no-plots
+
+#Step 8B: Run Busco
+busco -i /home/DAVIDSON/trthompson/Workspace/GENLAB/canu_trent/t_perfoliata.contigs.fasta -l /home/DAVIDSON/trthompson/Workspace/GENLAB/busco_downloads/lineages/embryophyta_odb10 -o busco_canu_trent -m genome --cpu 8 --offline --force
