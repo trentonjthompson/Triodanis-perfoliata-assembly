@@ -1,0 +1,127 @@
+#Load conda
+
+module load anaconda3
+
+# Create a dedicated conda environment
+conda create -n hic_analysis python=3.9
+
+# Activate the newly created environment
+conda activate hic_analysis
+
+# Configure conda channels in order of priority
+conda config --add channels defaults
+conda config --add channels bioconda
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+
+# Install essential tools for Hi-C analysis
+conda install -y wget git samtools sra-tools fastqc trim-galore bwa java-jdk gcc make gawk parallel
+
+# Create a directory for all Hi-C analysis tools
+mkdir -p /hic_tools
+cd /hic_tools
+
+# Clone the Juicer repository
+git clone https://github.com/aidenlab/juicer.git
+cd juicer
+
+# Create necessary directory structure for Juicer 2.0
+mkdir -p scripts/common
+cp CPU/*.* scripts/common
+cp CPU/common/* scripts/common
+
+# Download Juicer Tools JAR file
+wget https://github.com/aidenlab/Juicebox/releases/download/v2.17.00/juicer_tools_2.17.00.jar
+ 
+# Create symbolic link with the expected name
+mv juicer_tools_2.17.00.jar scripts/common/juicer_tools.jar
+
+# Create directories for reference data
+mkdir -p /hic_references/tperfoliata
+cd /hic_references/tperfoliata
+
+# Move TP polished reference genome to correct directory
+cd /ocean/projects/bio250085p/shared/hic/
+cp tp_polished_contigs.fasta /ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata
+cd /ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata
+
+#Change reference genome name
+mv tp_polished_contigs.fasta tp_polished.fasta
+
+# Create BWA index for the reference genome
+bwa index tp_polished.fasta
+samtools faidx tp_polished.fasta
+
+
+# Extract chromosome sizes from the FASTA file
+cd /ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata
+cut -f1,2 tp_polished.fasta.fai > tp_polished.chrom.sizes
+
+# Generate the MboI restriction sites file in Juicer format
+cd /ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata
+
+#(Paste this after)
+python - <<'PY'
+import re
+from pathlib import Path
+
+fasta = Path("tp_polished.fasta")
+out = Path("/ocean/projects/bio250085p/shared/hic_tools/juicer/restriction_sites/_MboI.txt")
+motif = re.compile("GATC")  # MboI / DpnII
+
+def write_sites(name, seq, fh):
+    seq = seq.upper()
+    for m in motif.finditer(seq):
+        fh.write(f"{name}\t{m.start()+1}\n")  # 1-based
+
+with fasta.open() as f, out.open("w") as o:
+    name = None
+    buf = []
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if name is not None:
+                write_sites(name, "".join(buf), o)
+            name = line[1:].split()[0]
+            buf = []
+        else:
+            buf.append(line)
+    if name is not None:
+        write_sites(name, "".join(buf), o)
+
+print("Wrote", out, "bytes =", out.stat().st_size)
+PY
+
+# Moving Hi-C files to correct directory
+mv /ocean/projects/bio250085p/shared/hic/*fq.gz /ocean/projects/bio250085p/shared/hic_tools/
+
+#  Uncompress and rename files to Juicer's expected format
+gunzip -c /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_1.fq.gz > /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_1.fastq
+
+gunzip -c /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_2.fq.gz > /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_2.fastq
+
+#Run Juicer pipeline
+#Set key variables
+
+Run Juicer pipeline (run from the directory where Hi-C files are located)
+#-----------------------------------------------
+
+cd /ocean/projects/bio250085p/shared/hic_tools/ 
+
+mkdir -p fastq
+
+ln -sf /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_1.fq.gz fastq/Trio_HiC_R1.fq.gz
+ln -sf /ocean/projects/bio250085p/shared/hic_tools/Trio_HiC_L1_2.fq.gz fastq/Trio_HiC_R2.fq.gz
+ 
+# Set key variables for the analysis
+GENOME="t_perfoliata"
+REFERENCE_DIR="/ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata"
+RESTRICTION_SITE="MboI"
+RESTRICTION_FILE="/ocean/projects/bio250085p/shared/hic_tools/juicer/restriction_sites/tperfoliata_MboI.txt"
+CHROM_SIZES="/ocean/projects/bio250085p/shared/hic_tools/juicer/hic_references/tperfoliata/tp_polished.chrom.sizes"
+THREADS=16
+ 
+# Run the complete Juicer pipeline
+bash /ocean/projects/bio250085p/shared/hic_tools/juicer/scripts/common/juicer.sh -D /ocean/projects/bio250085p/shared/hic_tools/juicer/ -d /ocean/projects/bio250085p/shared/hic_tools/ -g ${GENOME} -s ${RESTRICTION_SITE} -p ${CHROM_SIZES} -y ${RESTRICTION_FILE} -z ${REFERENCE_DIR}/tp_polished.fasta -t ${THREADS}
