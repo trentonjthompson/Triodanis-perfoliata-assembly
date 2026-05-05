@@ -1,0 +1,115 @@
+#!/bin/bash
+#SBATCH --job-name=smudgeplot_pipeline
+#SBATCH --partition=RM
+#SBATCH --nodes=1
+#SBATCH --ntasks=16
+#SBATCH --mem=64GB
+#SBATCH --time=48:00:00
+#SBATCH --output=smudgeplot_pipeline.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=trthompson@davidson.edu
+
+set -euo pipefail
+
+#########################################
+# STEP 0 — LOAD ENVIRONMENT AND SETTINGS
+#########################################
+
+module load anaconda3
+conda activate ploidy
+
+# Working directory
+WORKDIR="/ocean/projects/bio250085p/shared/ploidy"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+# Input reads (Illumina)
+READS_1="/ocean/projects/bio250085p/shared/polish/illumina_L4_1.fastq"
+READS_2="/ocean/projects/bio250085p/shared/polish/illumina_L4_2.fastq"
+
+# Threads
+THREADS=16
+
+# Output directories
+KMER_DIR="$WORKDIR/kmer_counts/reads"
+SMUDGE_DIR="$WORKDIR/smudgeplots/reads"
+PAIR_DIR="$SMUDGE_DIR/kmerpairs"
+PLOT_DIR="$SMUDGE_DIR/run"
+
+mkdir -p "$KMER_DIR" "$PAIR_DIR" "$PLOT_DIR"
+
+echo "Pipeline started at: $(date)"
+echo "Running on host: $(hostname)"
+echo "Working directory: $(pwd)"
+echo "Threads: $THREADS"
+
+#########################################
+# STEP 1 — CHECK / INSTALL DEPENDENCIES
+#########################################
+
+# FastK (install once if not present)
+if [ ! -d "$WORKDIR/FastK" ]; then
+    echo "Installing FastK"
+    git clone https://github.com/thegenemyers/FastK.git
+    cd FastK
+    make
+    cd "$WORKDIR"
+fi
+
+# Smudgeplot (install once if not present)
+if [ ! -d "$WORKDIR/smudgeplot" ]; then
+    echo "Installing Smudgeplot"
+    git clone https://github.com/KamilSJaron/smudgeplot.git
+    cd smudgeplot
+    make
+    cd "$WORKDIR"
+fi
+
+# Add tools to PATH
+export PATH="$WORKDIR/FastK:$WORKDIR/smudgeplot:$PATH"
+
+#########################################
+# STEP 2 — GENERATE K-MER COUNTS (FastK)
+#########################################
+
+echo "Step 2: Running FastK to generate k-mer database"
+
+FastK \
+    -v \
+    -t"$THREADS" \
+    -k21 \
+    -M16 \
+    -T"$THREADS" \
+    "$READS_1" \
+    "$READS_2" \
+    -N"$KMER_DIR/k21"
+
+#########################################
+# STEP 3 — COMPUTE HETEROZYGOUS K-MER PAIRS
+#########################################
+
+echo "Step 3: Running smudgeplot hetmers"
+
+smudgeplot.py hetmers \
+    -L 12 \
+    -t "$THREADS" \
+    -o "$PAIR_DIR" \
+    --verbose \
+    "$KMER_DIR/k21"
+
+#########################################
+# STEP 4 — GENERATE SMUDGEPLOT
+#########################################
+
+echo "Step 4: Generating smudgeplot"
+
+smudgeplot.py plot \
+    -o "$PLOT_DIR" \
+    "$PAIR_DIR/kmerpairs_coverages.tsv"
+
+#########################################
+# FINAL OUTPUT
+#########################################
+
+echo "Pipeline completed at: $(date)"
+echo "Smudgeplot output directory: $PLOT_DIR"
