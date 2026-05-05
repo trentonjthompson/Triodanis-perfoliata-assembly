@@ -125,3 +125,47 @@ THREADS=16
  
 # Run the complete Juicer pipeline
 bash /ocean/projects/bio250085p/shared/hic_tools/juicer/scripts/common/juicer.sh -D /ocean/projects/bio250085p/shared/hic_tools/juicer/ -d /ocean/projects/bio250085p/shared/hic_tools/ -g ${GENOME} -s ${RESTRICTION_SITE} -p ${CHROM_SIZES} -y ${RESTRICTION_FILE} -z ${REFERENCE_DIR}/tp_polished.fasta -t ${THREADS}
+
+# YaHS Installation (Used for the actual scaffolding)
+git clone https://github.com/c-zhou/yahs.git
+cd yahs && make
+
+# Indexing
+bwa index tp_polished.fasta
+samtools faidx tp_polished.fasta
+cut -f1,2 tp_polished.fasta.fai > tp_polished.chrom.sizes
+
+# Run Juicer Alignment (Simplified variable version)
+# This produces the 'merged_nodups.txt' file (approx 12GB in your case)
+bash juicer/scripts/common/juicer.sh \
+  -D /path/to/juicer/ \
+  -d /path/to/aligned/ \
+  -g t_perfoliata \
+  -s MboI \
+  -p tp_polished.chrom.sizes \
+  -y /path/to/restriction_sites/tperfoliata_MboI.txt \
+  -z tp_polished.fasta \
+  -t 16
+
+# Run YaHS
+# Input: The polished fasta and the binary link file from the Juicer run
+yahs tp_polished.fasta tp_yahs.bin -e GATC -o out
+
+# Output: tp_yahs_scaffolds_final.fa
+
+# --- FINAL HEATMAP PRODUCTION ---
+
+# 1. Regenerate chromosome sizes from the NEW YaHS assembly
+samtools faidx tp_yahs_scaffolds_final.fa
+cut -f 1,2 tp_yahs_scaffolds_final.fa.fai > out.counts_chrom.txt
+
+# 2. Filter for scaffolds >= 10kb (for computational efficiency)
+awk '$2 >= 10000' out.counts_chrom.txt > out.counts_chrom.filtered.txt
+
+# 3. Build the heatmap with Q30 filtering
+# -q 30 ensures high-quality read pairs (uniquely mapped)
+java -Xmx100g -jar /ocean/projects/bio250085p/shared/hic_tools/juicer/scripts/common/juicer_tools.jar pre \
+  -q 30 \
+  out.sorted.nodups.txt \
+  tp_yahs_final_filtered.hic \
+  out.counts_chrom.filtered.txt
