@@ -1,0 +1,66 @@
+#########################################
+# STEP 0 — LOAD ENVIRONMENT AND SETTINGS
+#########################################
+
+# Load required modules
+module load anaconda3
+
+# Activate conda environment (assumes already created)
+# If not created, uncomment the next line and run once:
+# conda create -n polish -c bioconda minimap2 racon samtools bwa pilon purge_dups
+
+conda activate polish
+
+# Input files
+ASSEMBLY="t_perfoliata.contigs.fasta"
+READS="nanopore.fastq.gz"
+
+# Working directory
+WORKDIR="/ocean/projects/bio250085p/shared/polish"
+cd "$WORKDIR"
+
+#########################################
+# STEP 1 — ALIGN READS (ROUND 1)
+#########################################
+
+/usr/bin/time -v minimap2 \
+    -x map-ont \
+    -t "$THREADS" \
+    "$ASSEMBLY" \
+    "$READS" \
+    > round1.paf \
+    2> minimap2_round1.log
+
+#########################################
+# STEP 2 — RACON POLISHING (ROUND 1)
+#########################################
+
+/usr/bin/time -v racon \
+    -t "$THREADS" \
+    "$READS" \
+    round1.paf \
+    "$ASSEMBLY" \
+    > racon_round1.fasta
+
+#########################################
+# STEP 3 — ALIGN READS (ROUND 2)
+#########################################
+
+/usr/bin/time -v minimap2 \
+    -x map-ont \
+    -t "$THREADS" \
+    racon_round1.fasta \
+    "$READS" \
+    > round2.paf \
+    2> minimap2_round2.log
+
+#########################################
+# STEP 4 — RACON POLISHING (ROUND 2)
+#########################################
+
+/usr/bin/time -v racon \
+    -t "$THREADS" \
+    "$READS" \
+    round2.paf \
+    racon_round1.fasta \
+    > racon_round2.fasta
