@@ -1,0 +1,110 @@
+#########################################
+# STEP 0 — LOAD ENVIRONMENT AND SETTINGS
+#########################################
+
+module load anaconda3
+module load BWA/0.7.3a
+module load samtools
+module load pilon/1.24
+
+conda activate ploidy
+
+# Input files
+ASSEMBLY="split.fa"
+READS_1="illumina_L4_1.fastq.gz"
+READS_2="illumina_L4_2.fastq.gz"
+
+# Working directories
+WORKDIR="$PWD/pilon_work"
+CHUNK_DIR="$WORKDIR/chunks"
+CHUNK_FASTA_DIR="$WORKDIR/chunks_fasta"
+OUTPUT_DIR="$WORKDIR/pilon_out"
+
+# Chunk size (number of contigs per chunk)
+CHUNK_SIZE=400
+
+# Pilon jar path
+PILON_JAR="/opt/packages/pilon/1.24/pilon.jar"
+
+# Create directories
+mkdir -p "$WORKDIR" "$CHUNK_DIR" "$CHUNK_FASTA_DIR" "$OUTPUT_DIR"
+
+cd "$WORKDIR"
+
+echo "Pipeline started at: $(date)"
+echo "Running on host: $(hostname)"
+
+#########################################
+# STEP 1 — ALIGN READS AND BUILD BAM
+#########################################
+
+echo "Step 1: Indexing genome"
+bwa index "$ASSEMBLY"
+
+echo "Step 1: Aligning reads and sorting BAM"
+bwa mem -t 16 "$ASSEMBLY" "$READS_1" "$READS_2" | \
+    samtools sort -@ 16 -o pilon.bam
+
+echo "Step 1: Indexing BAM"
+samtools index pilon.bam
+
+#########################################
+# STEP 2 — PREPARE CONTIG LIST
+#########################################
+
+echo "Step 2: Indexing FASTA"
+samtools faidx "$ASSEMBLY"
+
+echo "Step 2: Extracting contig names"
+cut -f1 "${ASSEMBLY}.fai" > contigs.txt
+
+echo "Total contigs: $(wc -l < contigs.txt)"
+
+#########################################
+# STEP 3 — SPLIT INTO CHUNKS
+#########################################
+
+echo "Step 3: Splitting contigs into chunks of $CHUNK_SIZE"
+split -l "$CHUNK_SIZE" contigs.txt "$CHUNK_DIR/chunk_"
+
+#########################################
+# STEP 4 — CREATE FASTA FILE FOR EACH CHUNK
+#########################################
+
+echo "Step 4: Creating FASTA files per chunk"
+
+for f in "$CHUNK_DIR"/chunk_*; do
+    base=$(basename "$f")
+    out_fasta="$CHUNK_FASTA_DIR/${base}.fasta"
+
+    echo "Creating FASTA: $out_fasta"
+
+    samtools faidx "$ASSEMBLY" $(paste -sd ' ' "$f") > "$out_fasta"
+done
+
+#########################################
+# STEP 5 — RUN PILON ON EACH CHUNK
+#########################################
+
+echo "Step 5: Running Pilon on each chunk"
+
+for fasta in "$CHUNK_FASTA_DIR"/*.fasta; do
+    name=$(basename "$fasta" .fasta)
+
+    echo "Running Pilon on $name"
+
+    java -Xmx110G -jar "$PILON_JAR" \
+        --genome "$fasta" \
+        --frags pilon.bam \
+        --output "$OUTPUT_DIR/$name" \
+        --threads 16 \
+        --fix all
+done
+
+#########################################
+# STEP 6 — MERGE POLISHED FASTA FILES
+#########################################
+
+echo "Step 6: Merging polished FASTA files"
+
+cat "$OUTPUT_DIR"/*.fasta > polished_genome.fa
