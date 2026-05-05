@@ -1,0 +1,153 @@
+#!/bin/bash
+#SBATCH --job-name=purge_dups_pipeline
+#SBATCH --partition=RM
+#SBATCH --nodes=1
+#SBATCH --ntasks=16
+#SBATCH --mem=64GB
+#SBATCH --time=72:00:00
+#SBATCH --output=purge_dups_pipeline.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=trthompson@davidson.edu
+
+set -euo pipefail
+
+#########################################
+# STEP 0 — LOAD ENVIRONMENT AND SETTINGS
+#########################################
+
+module load anaconda3
+conda activate ploidy
+
+# Working directory
+WORKDIR="/ocean/projects/bio250085p/shared/purge_dups"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+# Input files
+ASSEMBLY="polished_round2.fasta"
+READS="nanopore.fastq.gz"
+
+# Threads
+THREADS=16
+
+# Output directories
+ALIGN_DIR="$WORKDIR/reads_alignment"
+SELF_DIR="$WORKDIR/self_alignment"
+RESULT_DIR="$WORKDIR/results"
+
+mkdir -p "$ALIGN_DIR" "$SELF_DIR" "$RESULT_DIR"
+
+echo "Pipeline started at: $(date)"
+echo "Running on host: $(hostname)"
+echo "Working directory: $(pwd)"
+echo "Threads: $THREADS"
+
+#########################################
+# STEP 1 — ALIGN READS TO ASSEMBLY
+#########################################
+
+echo "Step 1: Mapping ONT reads to assembly"
+
+minimap2 -x map-ont -t "$THREADS" \
+    "$ASSEMBLY" \
+    "$READS" \
+    | gzip -c > "$ALIGN_DIR/ont_aln.paf.gz"
+
+#########################################
+# STEP 2 — COMPUTE COVERAGE STATISTICS
+#########################################
+
+echo "Step 2: Computing coverage statistics"
+
+cd "$ALIGN_DIR"
+pbcstat ont_aln.paf.gz
+
+# Output:
+# PB.stat
+# PB.base.cov
+
+#########################################
+# STEP 3 — CALCULATE COVERAGE CUTOFFS
+#########################################
+
+echo "Step 3: Calculating coverage cutoffs"
+
+calcuts PB.stat > cutoffs 2> calcuts.log
+
+#########################################
+# STEP 4 — SPLIT ASSEMBLY
+#########################################
+
+echo "Step 4: Splitting assembly"
+
+cd "$WORKDIR"
+split_fa "$ASSEMBLY" > split.fa
+
+#########################################
+# STEP 5 — SELF-ALIGNMENT OF ASSEMBLY
+#########################################
+
+echo "Step 5: Running self-alignment"
+
+cd "$SELF_DIR"
+
+minimap2 -x asm5 -DP -t "$THREADS" \
+    "$WORKDIR/split.fa" \
+    "$WORKDIR/split.fa" \
+    | gzip -c > self_aln.paf.gz
+
+#########################################
+# STEP 6 — IDENTIFY DUPLICATED REGIONS
+#########################################
+
+echo "Step 6: Running purge_dups"
+
+purge_dups \
+    -2 \
+    -T "$ALIGN_DIR/cutoffs" \
+    -c "$ALIGN_DIR/PB.base.cov" \
+    "$SELF_DIR/self_aln.paf.gz" \
+    > "$RESULT_DIR/dups.bed"
+
+#########################################
+# STEP 7 — EXTRACT PURGED ASSEMBLY
+#########################################
+
+echo "Step 7: Extracting purged and haplotig assemblies"
+
+cd "$RESULT_DIR"
+
+get_seqs dups.bed "$ASSEMBLY"
+
+# Outputs:
+# purged.fa  (primary assembly)
+# hap.fa     (haplotigs)
+
+#########################################
+# STEP 8 — OPTIONAL QUALITY ASSESSMENT
+#########################################
+
+echo "Step 8: Running BUSCO and QUAST (optional)"
+
+# BUSCO
+busco \
+    -i purged.fa \
+    -l /ocean/projects/bio250085p/shared/busco_lineages/lineages/embryophyta_odb10 \
+    -m genome \
+    -o busco_purged
+
+# QUAST
+quast purged.fa \
+    -o quast_purged \
+    --eukaryote \
+    --min-contig 1000
+
+#########################################
+# FINAL OUTPUT
+#########################################
+
+echo "Pipeline completed at: $(date)"
+echo "Results directory: $RESULT_DIR"
+echo "Key outputs:"
+echo "  - purged.fa (final primary assembly)"
+echo "  - hap.fa (haplotigs)"
